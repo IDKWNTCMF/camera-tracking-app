@@ -34,7 +34,7 @@ class FrameCorners:
     (np.searchsorted).
     """
 
-    __slots__ = ('_ids', '_points', '_sizes')
+    __slots__ = ('_ids', '_points', '_sizes', '_next_id')
 
     def __init__(self, ids, points, sizes):
         """
@@ -50,6 +50,7 @@ class FrameCorners:
         self._ids = ids[sorting_idx].reshape(-1, 1)
         self._points = points[sorting_idx].reshape(-1, 2)
         self._sizes = sizes[sorting_idx].reshape(-1, 1)
+        self._next_id = 1
 
     @property
     def ids(self):
@@ -63,11 +64,37 @@ class FrameCorners:
     def sizes(self):
         return self._sizes
 
+    @property
+    def next_id(self):
+        return self._next_id
+
     def __iter__(self):
         yield self.ids
         yield self.points
         yield self.sizes
 
+    def add_new_points(self, new_points, point_size):
+        new_ids = np.arange(self.next_id, self.next_id + len(new_points))
+        new_sizes = np.ones(len(new_points)) * point_size
+        if len(self._ids) == 0:
+            self._ids = new_ids.reshape(-1, 1)
+            self._points = new_points.reshape(-1, 2)
+            self._sizes = new_sizes.reshape(-1, 1)
+        else:
+            self._ids = np.concatenate((self._ids, new_ids.reshape(-1, 1)))
+            self._points = np.concatenate((self._points, new_points.reshape(-1, 2)))
+            self._sizes = np.concatenate((self._sizes, new_sizes.reshape(-1, 1)))
+        self._next_id += len(new_points)
+
+    def update_points(self, new_points, mask):
+        self._points = new_points.reshape(-1, 2)
+        ids_to_remove = []
+        for (idx, status) in enumerate(mask):
+            if status == 0:
+                ids_to_remove.append(idx)
+        self._ids = np.delete(self._ids, ids_to_remove, 0)
+        self._points = np.delete(self._points, ids_to_remove, 0)
+        self._sizes = np.delete(self._sizes, ids_to_remove, 0)
 
 def filter_frame_corners(frame_corners: FrameCorners,
                          mask: np.ndarray) -> FrameCorners:
