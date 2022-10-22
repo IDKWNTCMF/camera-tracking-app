@@ -96,8 +96,7 @@ def _build_impl(frame_sequence: pims.FramesSequence,
     for frame, cur_image in enumerate(frame_sequence[1:], 1):
         cur_image = np.uint8(cur_image * 255.0)
         corners = track_corners(prev_image, cur_image, lukas_kanade_params, corners)
-        if frame % 5 == 0:
-            corners = detect_corners(cur_image, shi_tomasi_params, corners)
+        corners = detect_corners(cur_image, shi_tomasi_params, corners)
 
         builder.set_corners_at_frame(frame, deepcopy(corners))
         prev_image = cur_image
