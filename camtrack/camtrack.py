@@ -127,10 +127,7 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
             print(f"Frame {selected_frame} processed successfully, {len(inliers)} inliers found")
             view_mats[selected_frame] = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
             outliers = np.delete(ids, inliers)
-            indices_to_remove = []
-            for i in range(len(point_cloud_builder.ids)):
-                if point_cloud_builder.ids[i] in outliers:
-                    indices_to_remove.append(i)
+            _, indices_to_remove, _ = np.intersect1d(point_cloud_builder.ids, outliers, return_indices=True)
             point_cloud_builder.delete_points(indices_to_remove)
             print(f"{len(outliers)} outliers have been filtered")
 
