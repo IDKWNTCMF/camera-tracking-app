@@ -80,7 +80,7 @@ def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
     shi_tomasi_params = dict(
         maxCorners=1000,
-        qualityLevel=0.05,
+        qualityLevel=0.1,
         minDistance=7,
         blockSize=7
     )
