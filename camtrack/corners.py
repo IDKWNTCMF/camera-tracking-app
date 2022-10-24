@@ -56,6 +56,8 @@ def detect_corners(image, shi_tomasi_params, cur_corners=None):
     else:
         new_corners = cur_corners
         shi_tomasi_params["maxCorners"] = max(1000 - len(cur_corners.ids), 0)
+        if len(cur_corners.ids) == 1000:
+            return cur_corners
         mask = np.ones_like(image) * 255
         for p in cur_corners.points:
             cv2.circle(mask, np.int0(p), shi_tomasi_params["blockSize"], 0, -1)
@@ -78,7 +80,7 @@ def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
     shi_tomasi_params = dict(
         maxCorners=1000,
-        qualityLevel=0.01,
+        qualityLevel=0.05,
         minDistance=7,
         blockSize=7
     )
