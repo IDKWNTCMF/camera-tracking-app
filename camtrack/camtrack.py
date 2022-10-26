@@ -49,6 +49,29 @@ def triangulate_and_add_points(intrinsic_mat, corner_storage, view_mats, frame_1
     point_cloud_builder._sort_data()
     return point_cloud_builder
 
+def add_neighbours(frames_to_process, frame, frame_count):
+    if frame - 1 >= 0:
+        frames_to_process.add(frame - 1)
+    if frame + 1 < frame_count:
+        frames_to_process.add(frame + 1)
+    return frames_to_process
+
+def select_frame(frames_to_process, frames_with_computed_camera_poses, point_cloud_builder, corner_storage):
+    max_intersection_ids = 0
+    selected_frame = 0
+    frames_to_remove = set()
+    for cur_frame in frames_to_process:
+        if cur_frame in frames_with_computed_camera_poses:
+            frames_to_remove.add(cur_frame)
+            continue
+        ids = np.intersect1d(point_cloud_builder.ids, corner_storage[cur_frame].ids)
+        if len(ids) > max_intersection_ids:
+            max_intersection_ids = len(ids)
+            selected_frame = cur_frame
+    for cur_frame in frames_to_remove:
+        frames_to_process.remove(cur_frame)
+    return selected_frame, frames_to_process
+
 def track_and_calc_colors(camera_parameters: CameraParameters,
                           corner_storage: CornerStorage,
                           frame_sequence_path: str,
@@ -78,39 +101,24 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     frames_with_computed_camera_poses.add(frame_1)
     frames_with_computed_camera_poses.add(frame_2)
     frames_to_process = set()
-    if frame_1 - 1 >= 0:
-        frames_to_process.add(frame_1 - 1)
-    if frame_1 + 1 < frame_count:
-        frames_to_process.add(frame_1 + 1)
-    if frame_2 - 1 >= 0:
-        frames_to_process.add(frame_2 - 1)
-    if frame_2 + 1 < frame_count:
-        frames_to_process.add(frame_2 + 1)
+    frames_to_process = add_neighbours(frames_to_process, frame_1, frame_count)
+    frames_to_process = add_neighbours(frames_to_process, frame_2, frame_count)
 
     print(f"Size of point cloud - {len(point_cloud_builder.ids)}")
     while len(frames_to_process) > 0:
-        max_intersection_ids = 0
-        selected_frame = 0
-        frames_to_remove = set()
-        for cur_frame in frames_to_process:
-            if cur_frame in frames_with_computed_camera_poses:
-                frames_to_remove.add(cur_frame)
-                continue
-            ids = np.intersect1d(point_cloud_builder.ids, corner_storage[cur_frame].ids)
-            if len(ids) > max_intersection_ids:
-                max_intersection_ids = len(ids)
-                selected_frame = cur_frame
-        for cur_frame in frames_to_remove:
-            frames_to_process.remove(cur_frame)
+        selected_frame, frames_to_process = select_frame(
+            frames_to_process,
+            frames_with_computed_camera_poses,
+            point_cloud_builder,
+            corner_storage
+        )
+        print("---------------------------------")
         if len(frames_to_process) == 0:
+            print("All frames processed successfully")
             break
-        print(f"---------------------------------")
         print(f"Processing frame {selected_frame}")
         frames_to_process.remove(selected_frame)
-        if selected_frame - 1 >= 0:
-            frames_to_process.add(selected_frame - 1)
-        if selected_frame + 1 < frame_count:
-            frames_to_process.add(selected_frame + 1)
+        frames_to_process = add_neighbours(frames_to_process, selected_frame, frame_count)
         ids, point_builder_indices, corners_indices = \
             np.intersect1d(point_cloud_builder.ids, corner_storage[selected_frame].ids, return_indices=True)
         points3d = point_cloud_builder.points[point_builder_indices]
@@ -161,6 +169,7 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
                     break
 
             frames_with_computed_camera_poses.add(selected_frame)
+            print(f"Points for frame {selected_frame} have been triangulated using {good_frames} frames")
             print(f"Size of point cloud - {len(point_cloud_builder.ids)}")
 
     calc_point_cloud_colors(
