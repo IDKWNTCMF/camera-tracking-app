@@ -87,7 +87,7 @@ def _build_impl(frame_sequence: pims.FramesSequence,
 
     lukas_kanade_params = dict(
         winSize=(15, 15),
-        maxLevel=2,
+        maxLevel=5,
         criteria=(cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 10, 0.01),
         minEigThreshold=5 * 10 ** (-4)
     )

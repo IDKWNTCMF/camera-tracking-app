@@ -113,9 +113,10 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
             corner_storage
         )
         print("---------------------------------")
+
         if len(frames_to_process) == 0:
-            print("All frames processed successfully")
             break
+
         print(f"Processing frame {selected_frame}")
         frames_to_process.remove(selected_frame)
         frames_to_process = add_neighbours(frames_to_process, selected_frame, frame_count)
@@ -171,6 +172,8 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
             frames_with_computed_camera_poses.add(selected_frame)
             print(f"Points for frame {selected_frame} have been triangulated using {good_frames} frames")
             print(f"Size of point cloud - {len(point_cloud_builder.ids)}")
+
+    print("All frames processed successfully")
 
     calc_point_cloud_colors(
         point_cloud_builder,
