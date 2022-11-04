@@ -36,7 +36,7 @@ def add_frames_to_dicts(point_id_to_frames, point_id_to_projections, counters, c
             counters[corner_id] = 1
         else:
             counters[corner_id] += 1
-            if counters[corner_id] < 5 or counters[corner_id] % 10 == 0:
+            if counters[corner_id] < 20 or counters[corner_id] % 5 == 0:
                 point_id_to_frames[corner_id].append(frame)
                 point_id_to_projections[corner_id].append(corners.points[idx])
                 ids_to_retriangulate.add(corner_id)
