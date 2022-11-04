@@ -42,11 +42,11 @@ def add_frames_to_dicts(point_id_to_frames, point_id_to_projections, counters, c
                 ids_to_retriangulate.add(corner_id)
     return point_id_to_frames, point_id_to_projections, counters, ids_to_retriangulate
 
-def triangulate_and_add_points(intrinsic_mat, corner_storage, view_mats, frame_1, frame_2, point_cloud_builder=None):
+def initialize_point_cloud_builder(intrinsic_mat, corner_storage, view_mats, frame_1, frame_2):
     triangulation_parameters = TriangulationParameters(
         max_reprojection_error=5.0,
-        min_triangulation_angle_deg=1.0,
-        min_depth=0.01
+        min_triangulation_angle_deg=0.5,
+        min_depth=0.6
     )
 
     correspondences = build_correspondences(corner_storage[frame_1], corner_storage[frame_2])
@@ -58,10 +58,7 @@ def triangulate_and_add_points(intrinsic_mat, corner_storage, view_mats, frame_1
         triangulation_parameters
     )
 
-    if point_cloud_builder is None:
-        return PointCloudBuilder(points=points3d, ids=ids)
-    point_cloud_builder.add_points(points=points3d, ids=ids)
-    return point_cloud_builder
+    return PointCloudBuilder(points=points3d, ids=ids)
 
 def add_neighbours(frames_to_process, frame, frame_count):
     if frame - 1 >= 0:
@@ -140,7 +137,7 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
         frame_2
     )
 
-    point_cloud_builder = triangulate_and_add_points(intrinsic_mat, corner_storage, view_mats, frame_1, frame_2, None)
+    point_cloud_builder = initialize_point_cloud_builder(intrinsic_mat, corner_storage, view_mats, frame_1, frame_2)
 
     frames_with_computed_camera_poses, frames_to_process = set(), set()
     frames_with_computed_camera_poses.add(frame_1)
