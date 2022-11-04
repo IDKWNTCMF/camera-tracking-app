@@ -83,12 +83,12 @@ def select_frame(frames_to_process, frames_with_computed_camera_poses, point_clo
         frames_to_process.remove(cur_frame)
     return selected_frame, frames_to_process
 
-def retriangulate_point_by_several_frames(point_projections, frames, view_mats, proj_mat):
+def retriangulate_point_by_several_frames(point_projections, frames, view_mats, intrinsic_mat):
     equations = []
     for idx, point_2d in enumerate(point_projections):
-        mat = proj_mat @ np.vstack((view_mats[frames[idx]], np.array([0, 0, 0, 1])))
-        equations.append(mat[3] * point_2d[0] - mat[0])
-        equations.append(mat[3] * point_2d[1] - mat[1])
+        mat = intrinsic_mat @ view_mats[frames[idx]]
+        equations.append(mat[2] * point_2d[0] - mat[0])
+        equations.append(mat[2] * point_2d[1] - mat[1])
     equations = np.array(equations)
     a = equations[:, :3]
     b = (-1) * equations[:, 3]
@@ -108,11 +108,6 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
         camera_parameters,
         rgb_sequence[0].shape[0]
     )
-    proj_mat = np.zeros((4, 4))
-    proj_mat[:3, :3] = intrinsic_mat
-    proj_mat[2][2] = 0
-    proj_mat[2][3] = 1
-    proj_mat[3][2] = 1
 
     frame_count = len(corner_storage)
     view_mats = [None] * frame_count
@@ -190,7 +185,7 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
                     point_id_to_projections[point_id],
                     point_id_to_frames[point_id],
                     view_mats,
-                    proj_mat
+                    intrinsic_mat
                 )
                 if point_id in point_cloud_builder.ids:
                     ids_to_update.append(point_id)
