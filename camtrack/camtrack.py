@@ -21,11 +21,26 @@ from _camtrack import (
     TriangulationParameters,
     build_correspondences,
     triangulate_correspondences,
-    rodrigues_and_translation_to_view_mat3x4,
-    to_camera_center
+    rodrigues_and_translation_to_view_mat3x4
 )
 
 import cv2
+
+def add_frames_to_dicts(point_id_to_frames, point_id_to_projections, counters, corners, frame):
+    ids_to_retriangulate = set()
+    for idx in range(corners.ids.shape[0]):
+        corner_id = corners.ids[idx][0]
+        if corner_id not in point_id_to_frames.keys():
+            point_id_to_frames[corner_id] = [frame]
+            point_id_to_projections[corner_id] = [corners.points[idx]]
+            counters[corner_id] = 1
+        else:
+            counters[corner_id] += 1
+            if counters[corner_id] < 5 or counters[corner_id] % 10 == 0:
+                point_id_to_frames[corner_id].append(frame)
+                point_id_to_projections[corner_id].append(corners.points[idx])
+                ids_to_retriangulate.add(corner_id)
+    return point_id_to_frames, point_id_to_projections, counters, ids_to_retriangulate
 
 def triangulate_and_add_points(intrinsic_mat, corner_storage, view_mats, frame_1, frame_2, point_cloud_builder=None):
     triangulation_parameters = TriangulationParameters(
@@ -46,7 +61,6 @@ def triangulate_and_add_points(intrinsic_mat, corner_storage, view_mats, frame_1
     if point_cloud_builder is None:
         return PointCloudBuilder(points=points3d, ids=ids)
     point_cloud_builder.add_points(points=points3d, ids=ids)
-    point_cloud_builder._sort_data()
     return point_cloud_builder
 
 def add_neighbours(frames_to_process, frame, frame_count):
@@ -72,6 +86,17 @@ def select_frame(frames_to_process, frames_with_computed_camera_poses, point_clo
         frames_to_process.remove(cur_frame)
     return selected_frame, frames_to_process
 
+def retriangulate_point_by_several_frames(point_projections, frames, view_mats, proj_mat):
+    equations = []
+    for idx, point_2d in enumerate(point_projections):
+        mat = proj_mat @ np.vstack((view_mats[frames[idx]], np.array([0, 0, 0, 1])))
+        equations.append(mat[3] * point_2d[0] - mat[0])
+        equations.append(mat[3] * point_2d[1] - mat[1])
+    equations = np.array(equations)
+    a = equations[:, :3]
+    b = (-1) * equations[:, 3]
+    return np.linalg.lstsq(a, b, rcond=None)[0]
+
 def track_and_calc_colors(camera_parameters: CameraParameters,
                           corner_storage: CornerStorage,
                           frame_sequence_path: str,
@@ -86,27 +111,46 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
         camera_parameters,
         rgb_sequence[0].shape[0]
     )
+    proj_mat = np.zeros((4, 4))
+    proj_mat[:3, :3] = intrinsic_mat
+    proj_mat[2][2] = 0
+    proj_mat[2][3] = 1
+    proj_mat[3][2] = 1
 
     frame_count = len(corner_storage)
     view_mats = [None] * frame_count
+    point_id_to_frames, point_id_to_projections, counters = dict(), dict(), dict()
 
     frame_1 = known_view_1[0]
     frame_2 = known_view_2[0]
     view_mats[frame_1] = pose_to_view_mat3x4(known_view_1[1])
     view_mats[frame_2] = pose_to_view_mat3x4(known_view_2[1])
+    point_id_to_frames, point_id_to_projections, counters, _ = add_frames_to_dicts(
+        point_id_to_frames,
+        point_id_to_projections,
+        counters,
+        corner_storage[frame_1],
+        frame_1
+    )
+    point_id_to_frames, point_id_to_projections, counters, _ = add_frames_to_dicts(
+        point_id_to_frames,
+        point_id_to_projections,
+        counters,
+        corner_storage[frame_2],
+        frame_2
+    )
 
     point_cloud_builder = triangulate_and_add_points(intrinsic_mat, corner_storage, view_mats, frame_1, frame_2, None)
 
-    frames_with_computed_camera_poses = set()
+    frames_with_computed_camera_poses, frames_to_process = set(), set()
     frames_with_computed_camera_poses.add(frame_1)
     frames_with_computed_camera_poses.add(frame_2)
-    frames_to_process = set()
     frames_to_process = add_neighbours(frames_to_process, frame_1, frame_count)
     frames_to_process = add_neighbours(frames_to_process, frame_2, frame_count)
 
     print(f"Size of point cloud - {len(point_cloud_builder.ids)}")
     while len(frames_to_process) > 0:
-        selected_frame, frames_to_process = select_frame(
+        selected_frame, cur_frames_to_process = select_frame(
             frames_to_process,
             frames_with_computed_camera_poses,
             point_cloud_builder,
@@ -114,11 +158,11 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
         )
         print("---------------------------------")
 
-        if len(frames_to_process) == 0:
+        if len(cur_frames_to_process) == 0:
             break
 
         print(f"Processing frame {selected_frame}")
-        frames_to_process.remove(selected_frame)
+        cur_frames_to_process.remove(selected_frame)
         frames_to_process = add_neighbours(frames_to_process, selected_frame, frame_count)
         ids, point_builder_indices, corners_indices = \
             np.intersect1d(point_cloud_builder.ids, corner_storage[selected_frame].ids, return_indices=True)
@@ -135,43 +179,38 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
         if retval:
             print(f"Frame {selected_frame} processed successfully, {len(inliers)} inliers found")
             view_mats[selected_frame] = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
-            outliers = np.delete(ids, inliers)
-            _, indices_to_remove, _ = np.intersect1d(point_cloud_builder.ids, outliers, return_indices=True)
-            point_cloud_builder.delete_points(indices_to_remove)
-            print(f"{len(outliers)} outliers have been filtered")
-
-            good_frames = 0
-            for i in range(frame_count):
-                frame = selected_frame - i
-                if frame >= 0 and frame in frames_with_computed_camera_poses and np.linalg.norm(to_camera_center(view_mats[frame]) - to_camera_center(view_mats[selected_frame])) >= 0.2:
-                    point_cloud_builder = triangulate_and_add_points(
-                        intrinsic_mat,
-                        corner_storage,
-                        view_mats,
-                        selected_frame,
-                        frame,
-                        point_cloud_builder
-                    )
-                    good_frames += 1
-
-                frame = selected_frame + i
-                if frame < frame_count and frame in frames_with_computed_camera_poses and np.linalg.norm(to_camera_center(view_mats[frame]) - to_camera_center(view_mats[selected_frame])) >= 0.2:
-                    point_cloud_builder = triangulate_and_add_points(
-                        intrinsic_mat,
-                        corner_storage,
-                        view_mats,
-                        selected_frame,
-                        frame,
-                        point_cloud_builder
-                    )
-                    good_frames += 1
-
-                if good_frames >= 20:
-                    break
-
+            point_id_to_frames, point_id_to_projections, counters, ids_to_retriangulate = add_frames_to_dicts(
+                point_id_to_frames,
+                point_id_to_projections,
+                counters,
+                corner_storage[selected_frame],
+                selected_frame
+            )
+            ids_to_update, points_3d_to_update = [], []
+            ids_to_add, points_3d_to_add = [], []
+            for point_id in ids_to_retriangulate:
+                point_3d = retriangulate_point_by_several_frames(
+                    point_id_to_projections[point_id],
+                    point_id_to_frames[point_id],
+                    view_mats,
+                    proj_mat
+                )
+                if point_id in point_cloud_builder.ids:
+                    ids_to_update.append(point_id)
+                    points_3d_to_update.append(point_3d)
+                else:
+                    ids_to_add.append(point_id)
+                    points_3d_to_add.append(point_3d)
+            if len(ids_to_add) > 0:
+                point_cloud_builder.add_points(ids=np.array(ids_to_add), points=np.array(points_3d_to_add))
+                print(f"{len(ids_to_add)} points added to cloud")
+            if len(ids_to_update) > 0:
+                point_cloud_builder.update_points(ids=np.array(ids_to_update), points=np.array(points_3d_to_update))
+                print(f"{len(ids_to_update)} points updated")
             frames_with_computed_camera_poses.add(selected_frame)
-            print(f"Points for frame {selected_frame} have been triangulated using {good_frames} frames")
             print(f"Size of point cloud - {len(point_cloud_builder.ids)}")
+        else:
+            print("Failed to solve PnP Ransac")
 
     print("All frames processed successfully")
 
