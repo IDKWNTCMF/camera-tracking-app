@@ -60,13 +60,6 @@ def initialize_point_cloud_builder(intrinsic_mat, corner_storage, view_mats, fra
 
     return PointCloudBuilder(points=points3d, ids=ids)
 
-def add_neighbours(frames_to_process, frame, frame_count):
-    if frame - 1 >= 0:
-        frames_to_process.add(frame - 1)
-    if frame + 1 < frame_count:
-        frames_to_process.add(frame + 1)
-    return frames_to_process
-
 def select_frame(frames_to_process, frames_with_computed_camera_poses, point_cloud_builder, corner_storage):
     max_intersection_ids = 0
     selected_frame = 0
@@ -137,29 +130,101 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     frames_with_computed_camera_poses, frames_to_process = set(), set()
     frames_with_computed_camera_poses.add(frame_1)
     frames_with_computed_camera_poses.add(frame_2)
-    frames_to_process = add_neighbours(frames_to_process, frame_1, frame_count)
-    frames_to_process = add_neighbours(frames_to_process, frame_2, frame_count)
 
     print(f"Size of point cloud - {len(point_cloud_builder.ids)}")
-    while len(frames_to_process) > 0:
-        selected_frame, cur_frames_to_process = select_frame(
-            frames_to_process,
-            frames_with_computed_camera_poses,
-            point_cloud_builder,
-            corner_storage
-        )
+    last_len = 0
+    while len(frames_with_computed_camera_poses) < frame_count:
+        frames_to_process = set(np.arange(frame_count))
+        if last_len == len(frames_with_computed_camera_poses):
+            print("---------------------------------")
+            selected_frame, frames_to_process = select_frame(
+                frames_to_process,
+                frames_with_computed_camera_poses,
+                point_cloud_builder,
+                corner_storage
+            )
+            print(f"Selecting frame to copy view mat for frame {selected_frame}")
+            frame_to_copy = frame_1
+            for frame in frames_with_computed_camera_poses:
+                if abs(frame - selected_frame) < abs(frame_to_copy - selected_frame):
+                    frame_to_copy = frame
+            print(f"Copy view mat for frame {selected_frame} from view mat for frame {frame_to_copy}")
+            view_mats[selected_frame] = view_mats[frame_to_copy]
+            frames_with_computed_camera_poses.add(selected_frame)
+            continue
+
+        last_len = len(frames_with_computed_camera_poses)
+
+        while len(frames_to_process) > 0:
+            selected_frame, frames_to_process = select_frame(
+                frames_to_process,
+                frames_with_computed_camera_poses,
+                point_cloud_builder,
+                corner_storage
+            )
+            print("---------------------------------")
+
+            if len(frames_to_process) == 0:
+                break
+
+            print(f"Processing frame {selected_frame}")
+            frames_to_process.remove(selected_frame)
+            ids, point_builder_indices, corners_indices = \
+                np.intersect1d(point_cloud_builder.ids, corner_storage[selected_frame].ids, return_indices=True)
+            points3d = point_cloud_builder.points[point_builder_indices]
+            points2d = corner_storage[selected_frame].points[corners_indices]
+            retval, rvec, tvec, inliers = cv2.solvePnPRansac(
+                objectPoints=points3d,
+                imagePoints=points2d,
+                cameraMatrix=intrinsic_mat,
+                distCoeffs=np.array([]),
+                reprojectionError=5.0
+            )
+
+            if retval:
+                print(f"Frame {selected_frame} processed successfully, {len(inliers)} inliers found")
+                view_mats[selected_frame] = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
+                point_id_to_frames, point_id_to_projections, counters, ids_to_retriangulate = add_frames_to_dicts(
+                    point_id_to_frames,
+                    point_id_to_projections,
+                    counters,
+                    corner_storage[selected_frame],
+                    selected_frame
+                )
+                ids_to_update, points_3d_to_update = [], []
+                ids_to_add, points_3d_to_add = [], []
+                for point_id in ids_to_retriangulate:
+                    point_3d = retriangulate_point_by_several_frames(
+                        point_id_to_projections[point_id],
+                        point_id_to_frames[point_id],
+                        view_mats,
+                        intrinsic_mat
+                    )
+                    if point_id in point_cloud_builder.ids:
+                        ids_to_update.append(point_id)
+                        points_3d_to_update.append(point_3d)
+                    else:
+                        ids_to_add.append(point_id)
+                        points_3d_to_add.append(point_3d)
+                if len(ids_to_add) > 0:
+                    point_cloud_builder.add_points(ids=np.array(ids_to_add), points=np.array(points_3d_to_add))
+                    print(f"{len(ids_to_add)} points added to cloud")
+                if len(ids_to_update) > 0:
+                    point_cloud_builder.update_points(ids=np.array(ids_to_update), points=np.array(points_3d_to_update))
+                    print(f"{len(ids_to_update)} points updated")
+                frames_with_computed_camera_poses.add(selected_frame)
+                print(f"Size of point cloud - {len(point_cloud_builder.ids)}")
+            else:
+                print("Failed to solve PnP Ransac")
+
+    print("All frames processed successfully")
+    print("Begin final reprocessing of all frames without point cloud recalculation")
+    for frame in range(frame_count):
         print("---------------------------------")
-
-        if len(cur_frames_to_process) == 0:
-            break
-
-        print(f"Processing frame {selected_frame}")
-        cur_frames_to_process.remove(selected_frame)
-        frames_to_process = add_neighbours(frames_to_process, selected_frame, frame_count)
         ids, point_builder_indices, corners_indices = \
-            np.intersect1d(point_cloud_builder.ids, corner_storage[selected_frame].ids, return_indices=True)
+            np.intersect1d(point_cloud_builder.ids, corner_storage[frame].ids, return_indices=True)
         points3d = point_cloud_builder.points[point_builder_indices]
-        points2d = corner_storage[selected_frame].points[corners_indices]
+        points2d = corner_storage[frame].points[corners_indices]
         retval, rvec, tvec, inliers = cv2.solvePnPRansac(
             objectPoints=points3d,
             imagePoints=points2d,
@@ -169,42 +234,12 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
         )
 
         if retval:
-            print(f"Frame {selected_frame} processed successfully, {len(inliers)} inliers found")
-            view_mats[selected_frame] = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
-            point_id_to_frames, point_id_to_projections, counters, ids_to_retriangulate = add_frames_to_dicts(
-                point_id_to_frames,
-                point_id_to_projections,
-                counters,
-                corner_storage[selected_frame],
-                selected_frame
-            )
-            ids_to_update, points_3d_to_update = [], []
-            ids_to_add, points_3d_to_add = [], []
-            for point_id in ids_to_retriangulate:
-                point_3d = retriangulate_point_by_several_frames(
-                    point_id_to_projections[point_id],
-                    point_id_to_frames[point_id],
-                    view_mats,
-                    intrinsic_mat
-                )
-                if point_id in point_cloud_builder.ids:
-                    ids_to_update.append(point_id)
-                    points_3d_to_update.append(point_3d)
-                else:
-                    ids_to_add.append(point_id)
-                    points_3d_to_add.append(point_3d)
-            if len(ids_to_add) > 0:
-                point_cloud_builder.add_points(ids=np.array(ids_to_add), points=np.array(points_3d_to_add))
-                print(f"{len(ids_to_add)} points added to cloud")
-            if len(ids_to_update) > 0:
-                point_cloud_builder.update_points(ids=np.array(ids_to_update), points=np.array(points_3d_to_update))
-                print(f"{len(ids_to_update)} points updated")
-            frames_with_computed_camera_poses.add(selected_frame)
-            print(f"Size of point cloud - {len(point_cloud_builder.ids)}")
+            print(f"View mat for frame {frame} was adjusted")
+            view_mats[frame] = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
         else:
-            print("Failed to solve PnP Ransac")
+            print(f"View mat for frame {frame} was not adjusted")
 
-    print("All frames processed successfully")
+    print("End of camera tracking")
 
     calc_point_cloud_colors(
         point_cloud_builder,
