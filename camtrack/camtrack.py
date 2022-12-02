@@ -26,6 +26,54 @@ from _camtrack import (
 
 import cv2
 
+def find_initial_frames(corner_storage, intrinsic_mat):
+    frame_count = len(corner_storage)
+    selected_frame_1 = 0
+    selected_frame_2 = 0
+    selected_E = None
+    selected_correspondences = None
+    best_ratio = -1.0
+    step = 5 if frame_count >= 50 else 1
+    for frame_1 in range(0, frame_count, step):
+        for frame_2 in range(frame_1 + 2 * step, frame_count, step):
+            correspondences = build_correspondences(corner_storage[frame_1], corner_storage[frame_2])
+            if correspondences.ids.shape[0] < 5:
+                continue
+
+            E, essential_mask = cv2.findEssentialMat(
+                points1=correspondences.points_1,
+                points2=correspondences.points_2,
+                cameraMatrix=intrinsic_mat,
+                method=cv2.RANSAC,
+                prob=0.999,
+                threshold=1,
+                maxIters=1000
+            )
+            _, homography_mask = cv2.findHomography(
+                srcPoints=correspondences.points_1,
+                dstPoints=correspondences.points_2,
+                method=cv2.RANSAC,
+                ransacReprojThreshold=1.0,
+                maxIters=1000,
+                confidence=0.999
+            )
+
+            cur_ratio = np.count_nonzero(essential_mask) / np.count_nonzero(homography_mask)
+            if cur_ratio > best_ratio:
+                selected_frame_1 = frame_1
+                selected_frame_2 = frame_2
+                best_ratio = cur_ratio
+                selected_E = E
+                selected_correspondences = correspondences
+
+    _, R, t, _ = cv2.recoverPose(
+        E=selected_E,
+        points1=selected_correspondences.points_1,
+        points2=selected_correspondences.points_2,
+        cameraMatrix=intrinsic_mat
+    )
+    return selected_frame_1, selected_frame_2, R, t
+
 def add_frames_to_dicts(point_id_to_frames, point_id_to_projections, counters, corners, frame):
     ids_to_retriangulate = set()
     for idx in range(corners.ids.shape[0]):
@@ -93,14 +141,19 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
                           known_view_1: Optional[Tuple[int, Pose]] = None,
                           known_view_2: Optional[Tuple[int, Pose]] = None) \
         -> Tuple[List[Pose], PointCloud]:
-    if known_view_1 is None or known_view_2 is None:
-        raise NotImplementedError()
 
     rgb_sequence = frameseq.read_rgb_f32(frame_sequence_path)
     intrinsic_mat = to_opencv_camera_mat3x3(
         camera_parameters,
         rgb_sequence[0].shape[0]
     )
+
+    if known_view_1 is None or known_view_2 is None:
+        selected_frame_1, selected_frame_2, R, t = find_initial_frames(corner_storage, intrinsic_mat)
+        known_view_1 = (selected_frame_1, Pose(r_mat=np.eye(3, ), t_vec=np.zeros(3, )))
+        known_view_2 = (selected_frame_2, view_mat3x4_to_pose(
+            rodrigues_and_translation_to_view_mat3x4(cv2.Rodrigues(R)[0], t)
+        ))
 
     frame_count = len(corner_storage)
     view_mats = [None] * frame_count
