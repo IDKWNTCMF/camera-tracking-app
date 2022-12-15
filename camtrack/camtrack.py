@@ -93,8 +93,8 @@ def add_frames_to_dicts(point_id_to_frames, point_id_to_projections, counters, c
 def initialize_point_cloud_builder(intrinsic_mat, corner_storage, view_mats, frame_1, frame_2):
     triangulation_parameters = TriangulationParameters(
         max_reprojection_error=5.0,
-        min_triangulation_angle_deg=0.5,
-        min_depth=0.6
+        min_triangulation_angle_deg=1.0,
+        min_depth=0.0
     )
 
     correspondences = build_correspondences(corner_storage[frame_1], corner_storage[frame_2])

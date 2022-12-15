@@ -80,14 +80,14 @@ def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
     shi_tomasi_params = dict(
         maxCorners=2000,
-        qualityLevel=0.05,
-        minDistance=7,
-        blockSize=7
+        qualityLevel=0.05 if len(frame_sequence) < 100 else 0.1,
+        minDistance=7 if len(frame_sequence) < 100 else 5,
+        blockSize=7 if len(frame_sequence) < 100 else 5
     )
 
     lukas_kanade_params = dict(
         winSize=(15, 15),
-        maxLevel=5,
+        maxLevel=4,
         criteria=(cv2.TERM_CRITERIA_COUNT | cv2.TERM_CRITERIA_EPS, 10, 0.01),
         minEigThreshold=5 * 10 ** (-4)
     )
