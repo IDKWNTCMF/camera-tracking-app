@@ -114,7 +114,7 @@ def _calc_triangulation_angle_mask(view_mat_1: np.ndarray,
     vecs_2 = normalize(camera_center_2 - points3d)
     coss_abs = np.abs(np.einsum('ij,ij->i', vecs_1, vecs_2))
     angles_mask = coss_abs <= np.cos(np.deg2rad(min_angle_deg))
-    return angles_mask, np.median(coss_abs)
+    return angles_mask, np.median(coss_abs), np.mean(coss_abs)
 
 
 Correspondences = namedtuple(
@@ -184,7 +184,7 @@ def triangulate_correspondences(correspondences: Correspondences,
                                 view_mat_1: np.ndarray, view_mat_2: np.ndarray,
                                 intrinsic_mat: np.ndarray,
                                 parameters: TriangulationParameters) \
-        -> Tuple[np.ndarray, np.ndarray, float]:
+        -> Tuple[np.ndarray, np.ndarray, float, float]:
     points2d_1 = correspondences.points_1
     points2d_2 = correspondences.points_2
 
@@ -217,7 +217,7 @@ def triangulate_correspondences(correspondences: Correspondences,
         _calc_z_mask(points3d, view_mat_1, parameters.min_depth),
         _calc_z_mask(points3d, view_mat_2, parameters.min_depth)
     )
-    angle_mask, median_cos = _calc_triangulation_angle_mask(
+    angle_mask, median_cos, mean_cos = _calc_triangulation_angle_mask(
         view_mat_1,
         view_mat_2,
         points3d,
@@ -225,7 +225,7 @@ def triangulate_correspondences(correspondences: Correspondences,
     )
     common_mask = reprojection_error_mask & z_mask & angle_mask
 
-    return points3d[common_mask], correspondences.ids[common_mask], median_cos
+    return points3d[common_mask], correspondences.ids[common_mask], median_cos, mean_cos
 
 
 def check_inliers_mask(inliers_mask: np.ndarray,

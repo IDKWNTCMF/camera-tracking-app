@@ -50,13 +50,13 @@ class _CornerStorageBuilder:
 
 def detect_corners(image, shi_tomasi_params, cur_corners=None):
     if cur_corners is None:
-        shi_tomasi_params["maxCorners"] = 2000
+        shi_tomasi_params["maxCorners"] = 5000
         new_corners = FrameCorners(np.array([]), np.array([]), np.array([]))
         mask = None
     else:
         new_corners = cur_corners
-        shi_tomasi_params["maxCorners"] = max(2000 - len(cur_corners.ids), 0)
-        if len(cur_corners.ids) == 2000:
+        shi_tomasi_params["maxCorners"] = max(5000 - len(cur_corners.ids), 0)
+        if len(cur_corners.ids) == 5000:
             return cur_corners
         mask = np.ones_like(image) * 255
         for p in cur_corners.points:
@@ -79,10 +79,10 @@ def track_corners(prev_image, cur_image, lukas_kanade_params, corners):
 def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
     shi_tomasi_params = dict(
-        maxCorners=2000,
-        qualityLevel=0.05 if len(frame_sequence) < 100 else 0.1,
-        minDistance=7 if len(frame_sequence) < 100 else 5,
-        blockSize=7 if len(frame_sequence) < 100 else 5
+        maxCorners=5000,
+        qualityLevel=0.05, # if len(frame_sequence) < 100 else 0.3,
+        minDistance=7 if len(frame_sequence) < 100 else 11,
+        blockSize=7 if len(frame_sequence) < 100 else 11
     )
 
     lukas_kanade_params = dict(

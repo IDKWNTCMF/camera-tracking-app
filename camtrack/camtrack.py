@@ -26,55 +26,79 @@ from _camtrack import (
 
 import cv2
 
+def compute_poses(corner_storage, intrinsic_mat, frame_1, frame_2):
+    correspondences = build_correspondences(corner_storage[frame_1], corner_storage[frame_2])
+    if correspondences.ids.shape[0] < 5:
+        return False, None, None, 0
+
+    E, inliers_mask = cv2.findEssentialMat(
+        points1=correspondences.points_1,
+        points2=correspondences.points_2,
+        cameraMatrix=intrinsic_mat,
+        method=cv2.RANSAC,
+        prob=0.999,
+        threshold=1,
+        maxIters=2000
+    )
+
+    _, R, t, mask = cv2.recoverPose(
+        E=E,
+        points1=correspondences.points_1,
+        points2=correspondences.points_2,
+        cameraMatrix=intrinsic_mat,
+        mask=inliers_mask
+    )
+
+    pose_1 = Pose(r_mat=np.eye(3, ), t_vec=np.zeros(3, ))
+    pose_2 = view_mat3x4_to_pose(
+        rodrigues_and_translation_to_view_mat3x4(cv2.Rodrigues(R)[0], t)
+    )
+    return True, pose_1, pose_2, mask
+
 def find_initial_frames(corner_storage, intrinsic_mat):
     frame_count = len(corner_storage)
-    selected_frame_1 = 0
-    selected_frame_2 = 0
-    selected_E = None
-    selected_correspondences = None
-    best_ratio = -1.0
-    step = 5 if frame_count >= 50 else 1
-    for frame_1 in range(0, frame_count, step):
-        for frame_2 in range(frame_1 + 2 * step, frame_count, step):
-            correspondences = build_correspondences(corner_storage[frame_1], corner_storage[frame_2])
-            if correspondences.ids.shape[0] < 5:
+    frame_pairs = []
+    cloud_sizes = []
+    ratios = []
+
+    step = 10 if frame_count >= 100 else 5
+    diff = 30 if frame_count >= 100 else 5
+    max_diff = 60 if frame_count >= 100 else 30
+    max_corners = 0
+    for frame in range(0, frame_count):
+        max_corners = max(max_corners, corner_storage[frame].ids.shape[0])
+    for frame_1 in range(0, min(120, frame_count), step):
+        for frame_2 in range(frame_1 + diff, min(frame_count, frame_1 + max_diff), step):
+            found, pose_1, pose_2, mask = compute_poses(corner_storage, intrinsic_mat, frame_1, frame_2)
+            if not found:
                 continue
 
-            E, essential_mask = cv2.findEssentialMat(
-                points1=correspondences.points_1,
-                points2=correspondences.points_2,
-                cameraMatrix=intrinsic_mat,
-                method=cv2.RANSAC,
-                prob=0.999,
-                threshold=1,
-                maxIters=1000
-            )
-            _, homography_mask = cv2.findHomography(
-                srcPoints=correspondences.points_1,
-                dstPoints=correspondences.points_2,
-                method=cv2.RANSAC,
-                ransacReprojThreshold=1.0,
-                maxIters=1000,
-                confidence=0.999
+            _, ids, median_cos, mean_cos = do_triangulate_correspondences(
+                intrinsic_mat,
+                corner_storage,
+                pose_to_view_mat3x4(pose_1),
+                pose_to_view_mat3x4(pose_2),
+                frame_1,
+                frame_2
             )
 
-            cur_ratio = np.count_nonzero(essential_mask) / np.count_nonzero(homography_mask)
-            if cur_ratio > best_ratio:
-                selected_frame_1 = frame_1
-                selected_frame_2 = frame_2
-                best_ratio = cur_ratio
-                selected_E = E
-                selected_correspondences = correspondences
+            # ratio = ids.shape[0] / max_corners # min(corner_storage[frame_1].ids.shape[0], corner_storage[frame_2].ids.shape[0])
+            ratio = np.count_nonzero(mask) / max_corners
+            print(f"Frame 1: {frame_1}, frame 2: {frame_2}, median cos: {median_cos}, mean cos: {mean_cos}, cnt: {ids.shape[0]}, ratio: {ratio}")
+            if (frame_count >= 100 and mean_cos < 0.999 and ratio > 0.3) or (frame_count < 100 and mean_cos < 0.9995 and ratio > 0.3): # or (frame_count < 100 and median_cos < 0.9995 and ratio > 0.4):
+                return frame_1, frame_2, pose_1, pose_2
 
-    _, R, t, _ = cv2.recoverPose(
-        E=selected_E,
-        points1=selected_correspondences.points_1,
-        points2=selected_correspondences.points_2,
-        cameraMatrix=intrinsic_mat
-    )
-    return selected_frame_1, selected_frame_2, R, t
+            if (frame_count < 100 and median_cos < 0.995) or (frame_count >= 100 and median_cos < 0.999):
+                frame_pairs.append((frame_1, frame_2))
+                cloud_sizes.append(ids.shape[0])
+                ratios.append(ratio)
 
-def add_frames_to_dicts(point_id_to_frames, point_id_to_projections, counters, corners, frame):
+    frame_1, frame_2 = frame_pairs[np.argmax(cloud_sizes)]
+    _, pose_1, pose_2, _ = compute_poses(corner_storage, intrinsic_mat, frame_1, frame_2)
+
+    return frame_1, frame_2, pose_1, pose_2
+
+def add_frames_to_dicts(point_id_to_frames, point_id_to_projections, counters, corners, frame, frame_count):
     ids_to_retriangulate = set()
     for idx in range(corners.ids.shape[0]):
         corner_id = corners.ids[idx][0]
@@ -84,29 +108,28 @@ def add_frames_to_dicts(point_id_to_frames, point_id_to_projections, counters, c
             counters[corner_id] = 1
         else:
             counters[corner_id] += 1
-            if counters[corner_id] < 20 or counters[corner_id] % 5 == 0:
-                point_id_to_frames[corner_id].append(frame)
-                point_id_to_projections[corner_id].append(corners.points[idx])
+            point_id_to_frames[corner_id].append(frame)
+            point_id_to_projections[corner_id].append(corners.points[idx])
+            if frame_count < 100 or counters[corner_id] < 10 or counters[corner_id] % 5 == 0:
                 ids_to_retriangulate.add(corner_id)
     return point_id_to_frames, point_id_to_projections, counters, ids_to_retriangulate
 
-def initialize_point_cloud_builder(intrinsic_mat, corner_storage, view_mats, frame_1, frame_2):
+def do_triangulate_correspondences(intrinsic_mat, corner_storage, view_mat_1, view_mat_2, frame_1, frame_2):
     triangulation_parameters = TriangulationParameters(
         max_reprojection_error=5.0,
-        min_triangulation_angle_deg=1.0,
-        min_depth=0.0
+        min_triangulation_angle_deg=0.7,
+        min_depth=0.7
     )
 
     correspondences = build_correspondences(corner_storage[frame_1], corner_storage[frame_2])
-    points3d, ids, _ = triangulate_correspondences(
+
+    return triangulate_correspondences(
         correspondences,
-        view_mats[frame_1],
-        view_mats[frame_2],
+        view_mat_1,
+        view_mat_2,
         intrinsic_mat,
         triangulation_parameters
     )
-
-    return PointCloudBuilder(points=points3d, ids=ids)
 
 def select_frame(frames_to_process, frames_with_computed_camera_poses, point_cloud_builder, corner_storage):
     max_intersection_ids = 0
@@ -149,11 +172,10 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
     )
 
     if known_view_1 is None or known_view_2 is None:
-        selected_frame_1, selected_frame_2, R, t = find_initial_frames(corner_storage, intrinsic_mat)
-        known_view_1 = (selected_frame_1, Pose(r_mat=np.eye(3, ), t_vec=np.zeros(3, )))
-        known_view_2 = (selected_frame_2, view_mat3x4_to_pose(
-            rodrigues_and_translation_to_view_mat3x4(cv2.Rodrigues(R)[0], t)
-        ))
+        selected_frame_1, selected_frame_2, pose_1, pose_2 = find_initial_frames(corner_storage, intrinsic_mat)
+        print(selected_frame_1, selected_frame_2)
+        known_view_1 = (selected_frame_1, pose_1)
+        known_view_2 = (selected_frame_2, pose_2)
 
     frame_count = len(corner_storage)
     view_mats = [None] * frame_count
@@ -168,17 +190,27 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
         point_id_to_projections,
         counters,
         corner_storage[frame_1],
-        frame_1
+        frame_1,
+        frame_count
     )
     point_id_to_frames, point_id_to_projections, counters, _ = add_frames_to_dicts(
         point_id_to_frames,
         point_id_to_projections,
         counters,
         corner_storage[frame_2],
-        frame_2
+        frame_2,
+        frame_count
     )
 
-    point_cloud_builder = initialize_point_cloud_builder(intrinsic_mat, corner_storage, view_mats, frame_1, frame_2)
+    points3d, ids, _, _ = do_triangulate_correspondences(
+        intrinsic_mat,
+        corner_storage,
+        view_mats[frame_1],
+        view_mats[frame_2],
+        frame_1,
+        frame_2
+    )
+    point_cloud_builder = PointCloudBuilder(points=points3d, ids=ids)
 
     frames_with_computed_camera_poses, frames_to_process = set(), set()
     frames_with_computed_camera_poses.add(frame_1)
@@ -236,13 +268,24 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
 
             if retval:
                 print(f"Frame {selected_frame} processed successfully, {len(inliers)} inliers found")
-                view_mats[selected_frame] = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
+                _, new_rvec, new_tvec = cv2.solvePnP(
+                    objectPoints=points3d[inliers],
+                    imagePoints=points2d[inliers],
+                    cameraMatrix=intrinsic_mat,
+                    rvec=rvec,
+                    tvec=tvec,
+                    distCoeffs=np.array([]),
+                    useExtrinsicGuess=True,
+                    flags=cv2.SOLVEPNP_ITERATIVE
+                )
+                view_mats[selected_frame] = rodrigues_and_translation_to_view_mat3x4(new_rvec, new_tvec)
                 point_id_to_frames, point_id_to_projections, counters, ids_to_retriangulate = add_frames_to_dicts(
                     point_id_to_frames,
                     point_id_to_projections,
                     counters,
                     corner_storage[selected_frame],
-                    selected_frame
+                    selected_frame,
+                    frame_count
                 )
                 ids_to_update, points_3d_to_update = [], []
                 ids_to_add, points_3d_to_add = [], []
@@ -288,7 +331,17 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
 
         if retval:
             print(f"View mat for frame {frame} was adjusted")
-            view_mats[frame] = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
+            _, new_rvec, new_tvec = cv2.solvePnP(
+                objectPoints=points3d[inliers],
+                imagePoints=points2d[inliers],
+                cameraMatrix=intrinsic_mat,
+                rvec=rvec,
+                tvec=tvec,
+                distCoeffs=np.array([]),
+                useExtrinsicGuess=True,
+                flags=cv2.SOLVEPNP_ITERATIVE
+            )
+            view_mats[frame] = rodrigues_and_translation_to_view_mat3x4(new_rvec, new_tvec)
         else:
             print(f"View mat for frame {frame} was not adjusted")
 
