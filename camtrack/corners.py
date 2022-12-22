@@ -80,9 +80,9 @@ def _build_impl(frame_sequence: pims.FramesSequence,
                 builder: _CornerStorageBuilder) -> None:
     shi_tomasi_params = dict(
         maxCorners=5000,
-        qualityLevel=0.05, # if len(frame_sequence) < 100 else 0.3,
-        minDistance=7 if len(frame_sequence) < 100 else 11,
-        blockSize=7 if len(frame_sequence) < 100 else 11
+        qualityLevel=0.05,
+        minDistance=7,
+        blockSize=7
     )
 
     lukas_kanade_params = dict(

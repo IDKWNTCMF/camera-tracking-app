@@ -61,13 +61,13 @@ def find_initial_frames(corner_storage, intrinsic_mat):
     cloud_sizes = []
     ratios = []
 
-    step = 10 if frame_count >= 100 else 5
-    diff = 30 if frame_count >= 100 else 5
-    max_diff = 60 if frame_count >= 100 else 30
+    sample_ratios = []
+    sample_median_cos = []
+    step = 5 if frame_count >= 30 else 1
+    diff = 15 if frame_count >= 100 else 10
+    max_diff = 31
     max_corners = 0
-    for frame in range(0, frame_count):
-        max_corners = max(max_corners, corner_storage[frame].ids.shape[0])
-    for frame_1 in range(0, min(120, frame_count), step):
+    for frame_1 in range(0, frame_count, step):
         for frame_2 in range(frame_1 + diff, min(frame_count, frame_1 + max_diff), step):
             found, pose_1, pose_2, mask = compute_poses(corner_storage, intrinsic_mat, frame_1, frame_2)
             if not found:
@@ -82,18 +82,56 @@ def find_initial_frames(corner_storage, intrinsic_mat):
                 frame_2
             )
 
-            # ratio = ids.shape[0] / max_corners # min(corner_storage[frame_1].ids.shape[0], corner_storage[frame_2].ids.shape[0])
-            ratio = np.count_nonzero(mask) / max_corners
-            print(f"Frame 1: {frame_1}, frame 2: {frame_2}, median cos: {median_cos}, mean cos: {mean_cos}, cnt: {ids.shape[0]}, ratio: {ratio}")
-            if (frame_count >= 100 and mean_cos < 0.999 and ratio > 0.3) or (frame_count < 100 and mean_cos < 0.9995 and ratio > 0.3): # or (frame_count < 100 and median_cos < 0.9995 and ratio > 0.4):
+            ratio = np.count_nonzero(mask) # / max_corners
+            if ratio != 0:
+                sample_median_cos.append(median_cos)
+                sample_ratios.append(ratio)
+
+    sample_median_cos = np.array(sample_median_cos)
+    sample_ratios = np.array(sample_ratios)
+    for frame in range(0, frame_count):
+        max_corners = max(max_corners, corner_storage[frame].ids.shape[0])
+    for frame_1 in range(0, frame_count, step):
+        for frame_2 in range(frame_1 + diff, min(frame_count, frame_1 + max_diff), step):
+            found, pose_1, pose_2, mask = compute_poses(corner_storage, intrinsic_mat, frame_1, frame_2)
+            if not found:
+                continue
+
+            _, ids, median_cos, mean_cos = do_triangulate_correspondences(
+                intrinsic_mat,
+                corner_storage,
+                pose_to_view_mat3x4(pose_1),
+                pose_to_view_mat3x4(pose_2),
+                frame_1,
+                frame_2
+            )
+
+            ratio = np.count_nonzero(mask) # / max_corners
+            print(f"Frame 1: {frame_1}, frame 2: {frame_2}, mean cos: {mean_cos}, median cos: {median_cos}, ratio: {ratio / max_corners}, cloud size: {ids.shape[0]}")
+
+            q_cos = np.mean(sample_median_cos > median_cos)
+            q_ratio = np.mean(sample_ratios < ratio)
+
+            if q_cos > 0.9 and q_ratio > 0.9 and ids.shape[0] != 0:
+                print("q90")
                 return frame_1, frame_2, pose_1, pose_2
 
-            if (frame_count < 100 and median_cos < 0.995) or (frame_count >= 100 and median_cos < 0.999):
+            if frame_count >= 30 and q_cos > 0.5 and q_ratio > 0.5 and ids.shape[0] != 0:
+                print("q50")
+                return frame_1, frame_2, pose_1, pose_2
+
+            ratio /= max_corners
+            if (frame_count <= 100 and ratio > 0.8 and median_cos < np.cos(2.0 * np.pi / 180.0)) or (frame_count > 100 and ratio > 0.4 and median_cos < np.cos(2.0 * np.pi / 180.0)):
+                print("Not quantile but good")
+                return frame_1, frame_2, pose_1, pose_2
+
+            if median_cos < np.cos(np.pi / 180.0) and ratio > 0.1 and ids.shape[0] != 0:
                 frame_pairs.append((frame_1, frame_2))
                 cloud_sizes.append(ids.shape[0])
                 ratios.append(ratio)
 
-    frame_1, frame_2 = frame_pairs[np.argmax(cloud_sizes)]
+    print("Not quantile")
+    frame_1, frame_2 = frame_pairs[np.argmax(ratios)]
     _, pose_1, pose_2, _ = compute_poses(corner_storage, intrinsic_mat, frame_1, frame_2)
 
     return frame_1, frame_2, pose_1, pose_2
@@ -258,6 +296,8 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
                 np.intersect1d(point_cloud_builder.ids, corner_storage[selected_frame].ids, return_indices=True)
             points3d = point_cloud_builder.points[point_builder_indices]
             points2d = corner_storage[selected_frame].points[corners_indices]
+            if points3d.shape[0] < 5:
+                continue
             retval, rvec, tvec, inliers = cv2.solvePnPRansac(
                 objectPoints=points3d,
                 imagePoints=points2d,
@@ -268,17 +308,18 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
 
             if retval:
                 print(f"Frame {selected_frame} processed successfully, {len(inliers)} inliers found")
-                _, new_rvec, new_tvec = cv2.solvePnP(
-                    objectPoints=points3d[inliers],
-                    imagePoints=points2d[inliers],
-                    cameraMatrix=intrinsic_mat,
-                    rvec=rvec,
-                    tvec=tvec,
-                    distCoeffs=np.array([]),
-                    useExtrinsicGuess=True,
-                    flags=cv2.SOLVEPNP_ITERATIVE
-                )
-                view_mats[selected_frame] = rodrigues_and_translation_to_view_mat3x4(new_rvec, new_tvec)
+                if np.count_nonzero(inliers) >= 5:
+                    _, rvec, tvec = cv2.solvePnP(
+                        objectPoints=points3d[inliers],
+                        imagePoints=points2d[inliers],
+                        cameraMatrix=intrinsic_mat,
+                        rvec=rvec,
+                        tvec=tvec,
+                        distCoeffs=np.array([]),
+                        useExtrinsicGuess=True,
+                        flags=cv2.SOLVEPNP_ITERATIVE
+                    )
+                view_mats[selected_frame] = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
                 point_id_to_frames, point_id_to_projections, counters, ids_to_retriangulate = add_frames_to_dicts(
                     point_id_to_frames,
                     point_id_to_projections,
@@ -321,6 +362,8 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
             np.intersect1d(point_cloud_builder.ids, corner_storage[frame].ids, return_indices=True)
         points3d = point_cloud_builder.points[point_builder_indices]
         points2d = corner_storage[frame].points[corners_indices]
+        if points3d.shape[0] < 5:
+            continue
         retval, rvec, tvec, inliers = cv2.solvePnPRansac(
             objectPoints=points3d,
             imagePoints=points2d,
@@ -331,17 +374,18 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
 
         if retval:
             print(f"View mat for frame {frame} was adjusted")
-            _, new_rvec, new_tvec = cv2.solvePnP(
-                objectPoints=points3d[inliers],
-                imagePoints=points2d[inliers],
-                cameraMatrix=intrinsic_mat,
-                rvec=rvec,
-                tvec=tvec,
-                distCoeffs=np.array([]),
-                useExtrinsicGuess=True,
-                flags=cv2.SOLVEPNP_ITERATIVE
-            )
-            view_mats[frame] = rodrigues_and_translation_to_view_mat3x4(new_rvec, new_tvec)
+            if np.count_nonzero(inliers) >= 5:
+                _, rvec, tvec = cv2.solvePnP(
+                    objectPoints=points3d[inliers],
+                    imagePoints=points2d[inliers],
+                    cameraMatrix=intrinsic_mat,
+                    rvec=rvec,
+                    tvec=tvec,
+                    distCoeffs=np.array([]),
+                    useExtrinsicGuess=True,
+                    flags=cv2.SOLVEPNP_ITERATIVE
+                )
+            view_mats[frame] = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
         else:
             print(f"View mat for frame {frame} was not adjusted")
 
