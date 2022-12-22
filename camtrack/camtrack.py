@@ -217,12 +217,18 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
 
     frame_count = len(corner_storage)
     view_mats = [None] * frame_count
+    rvecs = [None] * frame_count
+    tvecs = [None] * frame_count
     point_id_to_frames, point_id_to_projections, counters = dict(), dict(), dict()
 
     frame_1 = known_view_1[0]
     frame_2 = known_view_2[0]
     view_mats[frame_1] = pose_to_view_mat3x4(known_view_1[1])
+    rvecs[frame_1] = np.array([view_mats[frame_1][2, 1], view_mats[frame_1][0, 2], view_mats[frame_1][1, 0]]).reshape((3, 1))
+    tvecs[frame_1] = np.array([view_mats[frame_1][0, 3], view_mats[frame_1][1, 3], view_mats[frame_1][2, 3]]).reshape((3, 1))
     view_mats[frame_2] = pose_to_view_mat3x4(known_view_2[1])
+    rvecs[frame_2] = np.array([view_mats[frame_2][2, 1], view_mats[frame_2][0, 2], view_mats[frame_2][1, 0]]).reshape((3, 1))
+    tvecs[frame_2] = np.array([view_mats[frame_2][0, 3], view_mats[frame_2][1, 3], view_mats[frame_2][2, 3]]).reshape((3, 1))
     point_id_to_frames, point_id_to_projections, counters, _ = add_frames_to_dicts(
         point_id_to_frames,
         point_id_to_projections,
@@ -273,6 +279,8 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
                     frame_to_copy = frame
             print(f"Copy view mat for frame {selected_frame} from view mat for frame {frame_to_copy}")
             view_mats[selected_frame] = view_mats[frame_to_copy]
+            rvecs[selected_frame] = rvecs[frame_to_copy]
+            tvecs[selected_frame] = tvecs[frame_to_copy]
             frames_with_computed_camera_poses.add(selected_frame)
             continue
 
@@ -309,17 +317,23 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
             if retval:
                 print(f"Frame {selected_frame} processed successfully, {len(inliers)} inliers found")
                 if np.count_nonzero(inliers) >= 5:
+                    frame_to_copy = frame_1
+                    for frame in frames_with_computed_camera_poses:
+                        if abs(frame - selected_frame) < abs(frame_to_copy - selected_frame):
+                            frame_to_copy = frame
                     _, rvec, tvec = cv2.solvePnP(
                         objectPoints=points3d[inliers],
                         imagePoints=points2d[inliers],
                         cameraMatrix=intrinsic_mat,
-                        rvec=rvec,
-                        tvec=tvec,
+                        rvec=rvecs[frame_to_copy],
+                        tvec=tvecs[frame_to_copy],
                         distCoeffs=np.array([]),
                         useExtrinsicGuess=True,
                         flags=cv2.SOLVEPNP_ITERATIVE
                     )
                 view_mats[selected_frame] = rodrigues_and_translation_to_view_mat3x4(rvec, tvec)
+                rvecs[selected_frame] = rvec
+                tvecs[selected_frame] = tvec
                 point_id_to_frames, point_id_to_projections, counters, ids_to_retriangulate = add_frames_to_dicts(
                     point_id_to_frames,
                     point_id_to_projections,
@@ -355,6 +369,20 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
                 print("Failed to solve PnP Ransac")
 
     print("All frames processed successfully")
+    ids_to_update = []
+    points_3d_to_update = []
+    for point_id in point_cloud_builder.ids:
+        point_3d = retriangulate_point_by_several_frames(
+            point_id_to_projections[point_id[0]],
+            point_id_to_frames[point_id[0]],
+            view_mats,
+            intrinsic_mat
+        )
+        ids_to_update.append(point_id[0])
+        points_3d_to_update.append(point_3d)
+    if len(ids_to_update) > 0:
+        point_cloud_builder.update_points(ids=np.array(ids_to_update), points=np.array(points_3d_to_update))
+        print(f"{len(ids_to_update)} points updated")
     print("Begin final reprocessing of all frames without point cloud recalculation")
     for frame in range(frame_count):
         print("---------------------------------")
@@ -379,8 +407,8 @@ def track_and_calc_colors(camera_parameters: CameraParameters,
                     objectPoints=points3d[inliers],
                     imagePoints=points2d[inliers],
                     cameraMatrix=intrinsic_mat,
-                    rvec=rvec,
-                    tvec=tvec,
+                    rvec=rvecs[frame],
+                    tvec=tvecs[frame],
                     distCoeffs=np.array([]),
                     useExtrinsicGuess=True,
                     flags=cv2.SOLVEPNP_ITERATIVE
